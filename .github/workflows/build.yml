@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86
+          msystem: MINGW32
+          regsvr32: C:\Windows\SysWOW64\regsvr32.exe
+        - arch: x64
+          msystem: MINGW64
+          regsvr32: C:\Windows\System32\regsvr32.exe
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ${{ matrix.msystem }}
+        update: true
+        install: make curl unzip
+        pacboy: gcc:p
+    - name: Cache FreeImage Sources
+      uses: actions/cache@v6
+      with:
+        path: bin/FreeImage3180.zip
+        key: freeimage-3.18.0
+    - name: Build
+      shell: msys2 {0}
+      run: make -j$(nproc) ARCH=${{ matrix.arch }}
+    - name: Check Windows XP Compatibility
+      shell: msys2 {0}
+      run: sh .github/scripts/checkxp.sh bin/${{ matrix.arch }}/fiwic.dll bin/${{ matrix.arch }}/FreeImage.dll
+    - name: Register Codec
+      shell: pwsh
+      run: |
+        $dll = (Resolve-Path bin\${{ matrix.arch }}\fiwic.dll).Path
+        $p = Start-Process -FilePath '${{ matrix.regsvr32 }}' -ArgumentList '/s', '/n', '/i:user', "`"$dll`"" -Wait -PassThru
+        if ($p.ExitCode -ne 0) { throw "regsvr32 failed with exit code $($p.ExitCode)" }
+    - name: Run Tests
+      shell: pwsh
+      working-directory: bin/${{ matrix.arch }}
+      run: |
+        function Test-Wic { & .\wictest.exe @args; if ($LASTEXITCODE -ne 0) { throw "wictest $args failed" } }
+        Test-Wic -list
+        Test-Wic -synth rgbaf -encode test.exr
+        Test-Wic -synth grayf -encode test.pfm
+        Test-Wic -synth rgb48 -encode test.psd
+        Test-Wic -synth gray16 -encode test.pgm
+        Test-Wic -synth rgba16 -encode test.tga
+        Test-Wic -fiwic test.tga -encode copy.ppm
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: fiwic-${{ matrix.arch }}
+        path: |
+          bin/${{ matrix.arch }}/fiwic.dll
+          bin/${{ matrix.arch }}/FreeImage.dll
+          bin/${{ matrix.arch }}/wictest.exe
